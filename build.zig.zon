@@ -1,5 +1,5 @@
 .{
-    .name = "libvlc",
+    .name = .libvlc,
     .version = "0.2.0",
     .dependencies = .{
         .libvlcpp = .{

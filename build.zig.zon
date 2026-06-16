@@ -8,4 +8,9 @@
     },
     .fingerprint = 0x8676449dcc14806e,
     .minimum_zig_version = "0.16.0",
+    .modules = .{
+        .vlc = .{
+            .root_source_file = "src/vlc.zig",
+        },
+    },
 }

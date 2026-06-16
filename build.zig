@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     if (comptime !checkVersion())
         @compileError("Please! Update zig toolchain >= 0.11!");
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -11,6 +12,7 @@ pub fn build(b: *std.Build) void {
         "Example",
         "Build example: [print-version, cliPlayer-(c,cpp,zig)]",
     ) orelse "print-version";
+
     if (std.mem.eql(u8, examples, "print-version"))
         make_example(b, .{
             .sdl_enabled = false,
@@ -56,34 +58,42 @@ fn make_example(b: *std.Build, info: BuildInfo) void {
     const example = switch (info.filetype) {
         .c, .cpp => b.addExecutable(.{
             .name = info.name,
-            .target = info.target,
-            .optimize = info.mode,
+            .root_module = b.createModule(.{
+                .target = info.target,
+                .optimize = info.mode,
+            }),
         }),
         else => b.addExecutable(.{
             .name = info.name,
-            .target = info.target,
-            .optimize = info.mode,
-            .root_source_file = .{ .path = info.path },
+            .root_module = b.createModule(.{
+                .target = info.target,
+                .optimize = info.mode,
+                .root_source_file = b.path(info.path), // Updated path handling
+            }),
         }),
     };
 
-    if (info.mode != .Debug or info.mode != .ReleaseSafe) {
-        example.strip = true;
-        example.disable_sanitize_c = true;
-    } else example.bundle_compiler_rt = true;
+    if (info.mode != .Debug and info.mode != .ReleaseSafe) {
+        example.root_module.strip = true;
+        example.root_module.sanitize_c = .off;
+    }
 
-    example.addAnonymousModule("vlc", .{
-        .source_file = .{
-            .path = "src/vlc.zig",
-        },
+    // Created module explicitly instead of using anonymous module mapping
+    const vlc_mod = b.createModule(.{
+        .root_source_file = b.path("src/vlc.zig"),
     });
+    // 2. Feed the header search paths directly to the module!
+    if (info.target.result.os.tag == .macos) {
+        vlc_mod.addIncludePath(.{ .cwd_relative = "/Applications/VLC.app/Contents/MacOS/include" });
+        vlc_mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
+    } else if (info.target.result.os.tag == .windows) {
+        vlc_mod.addIncludePath(.{ .cwd_relative = msys2Inc(info.target) });
+    }
+    example.root_module.addImport("vlc", vlc_mod);
 
-    if (info.filetype == .c or info.filetype == .cpp)
-        example.addCSourceFile(.{ .file = .{ .path = info.path }, .flags = &.{
-            "-Wall",
-            "-Werror",
-            "-Wextra",
-        } });
+    if (info.filetype == .c or info.filetype == .cpp) {
+        example.root_module.addCSourceFile(.{ .file = b.path(info.path), .flags = &.{ "-Wall", "-Werror", "-Wextra" } });
+    }
 
     if (info.sdl_enabled) {
         const libsdl_dep = b.dependency("libsdl", .{
@@ -91,45 +101,37 @@ fn make_example(b: *std.Build, info: BuildInfo) void {
             .optimize = info.mode,
         });
         const libsdl = libsdl_dep.artifact("sdl");
-        example.linkLibrary(libsdl);
-        example.installLibraryHeaders(libsdl);
+        example.root_module.linkLibrary(libsdl);
     }
 
     if (info.filetype == .cpp) {
-        const libvlcpp_dep = b.dependency("libvlcpp", .{
-            .target = info.target,
-            .optimize = info.mode,
-        });
-        const libvlcpp = libvlcpp_dep.artifact("vlcpp");
-        example.installLibraryHeaders(libvlcpp);
-        example.addIncludePath(.{ .path = "zig-out/include" });
+        example.root_module.addIncludePath(b.path("zig-out/include"));
     }
 
-    if (info.target.isDarwin()) {
-        // Custom path
-        example.addIncludePath(.{ .path = "/usr/local/include" });
-        example.addLibraryPath(.{ .path = "/usr/local/lib" });
+    // Checking OS types requires reading .result.os.tag directly now
+    if (info.target.result.os.tag == .macos) {
+        example.root_module.addIncludePath(.{ .cwd_relative = "/Applications/VLC.app/Contents/MacOS/include" });
+        example.root_module.addLibraryPath(.{ .cwd_relative = "/Applications/VLC.app/Contents/MacOS/lib" });
 
-        // Link Frameworks
-        example.linkFramework("Foundation");
-        example.linkFramework("Cocoa");
-        example.linkFramework("IOKit");
-
-        // Link library
-        example.linkSystemLibrary("vlc");
-    } else if (info.target.isWindows()) {
-        // msys2/clang - CI
-        example.addIncludePath(.{ .path = msys2Inc(info.target) });
-        example.addLibraryPath(.{ .path = msys2Lib(info.target) });
-        example.linkSystemLibraryName("vlc.dll");
-        example.want_lto = false;
+        example.root_module.linkFramework("Foundation", .{});
+        example.root_module.linkFramework("Cocoa", .{});
+        example.root_module.linkFramework("IOKit", .{});
+        example.root_module.linkSystemLibrary("vlc", .{});
+    } else if (info.target.result.os.tag == .windows) {
+        example.root_module.addIncludePath(.{ .cwd_relative = msys2Inc(info.target) });
+        example.root_module.addLibraryPath(.{ .cwd_relative = msys2Lib(info.target) });
+        example.root_module.linkSystemLibrary("vlc.dll", .{});
+        example.lto = .none;
     } else {
-        example.linkSystemLibrary("vlc");
+        example.root_module.linkSystemLibrary("vlc", .{});
     }
-    if (info.filetype == .cpp)
-        example.linkLibCpp()
-    else
-        example.linkLibC();
+
+    if (info.filetype == .cpp) {
+        example.root_module.link_libcpp = true;
+    } else {
+        example.root_module.link_libc = true;
+    }
+
     b.installArtifact(example);
 
     const run_cmd = b.addRunArtifact(example);
@@ -138,7 +140,7 @@ fn make_example(b: *std.Build, info: BuildInfo) void {
         run_cmd.addArgs(args);
     }
 
-    var descr = b.fmt("Run the {s} example", .{info.name});
+    const descr = b.fmt("Run the {s} example", .{info.name});
     const run_step = b.step("run", descr);
     run_step.dependOn(&run_cmd.step);
 }
@@ -158,8 +160,8 @@ fn checkVersion() bool {
 const BuildInfo = struct {
     sdl_enabled: bool,
     filetype: SourceType,
-    mode: std.builtin.Mode,
-    target: std.zig.CrossTarget,
+    mode: std.builtin.OptimizeMode,
+    target: std.Build.ResolvedTarget, // Updated Target Struct type
     name: []const u8,
     path: []const u8,
 };
@@ -170,16 +172,16 @@ const SourceType = enum(u32) {
     cpp,
 };
 
-fn msys2Inc(target: std.zig.CrossTarget) []const u8 {
-    return switch (target.getCpuArch()) {
+fn msys2Inc(target: std.Build.ResolvedTarget) []const u8 {
+    return switch (target.result.cpu.arch) {
         .x86_64 => "D:/msys64/clang64/include",
         .aarch64 => "D:/msys64/clangarm64/include",
         else => "D:/msys64/clang32/include",
     };
 }
 
-fn msys2Lib(target: std.zig.CrossTarget) []const u8 {
-    return switch (target.getCpuArch()) {
+fn msys2Lib(target: std.Build.ResolvedTarget) []const u8 {
+    return switch (target.result.cpu.arch) {
         .x86_64 => "D:/msys64/clang64/lib",
         .aarch64 => "D:/msys64/clangarm64/lib",
         else => "D:/msys64/clang32/lib",
@@ -188,8 +190,6 @@ fn msys2Lib(target: std.zig.CrossTarget) []const u8 {
 
 pub fn module(b: *std.Build) *std.Build.Module {
     return b.createModule(.{
-        .source_file = .{
-            .path = "src/vlc.zig",
-        },
+        .root_source_file = b.path("src/vlc.zig"),
     });
 }

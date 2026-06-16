@@ -1,10 +1,11 @@
 .{
     .name = .libvlc,
-    .version = "0.2.0",
-    .dependencies = .{
-        .libvlcpp = .{
-            .url = "https://github.com/kassane/libvlcpp/archive/00424d823873612c795f59eb1fc9a29c7360782a.tar.gz",
-            .hash = "12206324828247b2a8a4ec8a86e40e0ef8846971f95083e70dfb3acee2b1aa10ca5e",
-        },
+    .version = "0.3.0",
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
     },
+    .fingerprint = 0x8676449dcc14806e,
+    .minimum_zig_version = "0.16.0",
 }
